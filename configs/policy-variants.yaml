@@ -1,0 +1,44 @@
+# Config-driven mapping from resource types + tags to FMS/WAF behavior.
+
+resourceDefaults:
+  alb:
+    resourceType: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    scope: "REGIONAL"
+    defaultAction: "ALLOW"
+    managedRuleGroups:
+      # Base rule groups for all ALBs in the demo.
+      - vendor: "AWS"
+        name: "AWSManagedRulesCommonRuleSet"
+
+variants:
+  # 1) Strict rules for prod ALBs.
+  - name: "prod-strict"
+    match:
+      env: "prod"
+    overrides:
+      overrideDefaultAction: "ALLOW"
+      extraManagedRuleGroups:
+        - vendor: "AWS"
+          name: "AWSManagedRulesKnownBadInputsRuleSet"
+        - vendor: "AWS"
+          name: "AWSManagedRulesAmazonIpReputationList"
+
+  # 2) Public-facing ALBs get bot control rules.
+  - name: "public-bot-protection"
+    match:
+      visibility: "public"
+    overrides:
+      extraManagedRuleGroups:
+        - vendor: "AWS"
+          name: "AWSManagedRulesBotControlRuleSet"
+
+  # 3) High-sensitivity tags add anonymity / bad input protections.
+  - name: "high-sensitivity-hardened"
+    match:
+      sensitivity: "Dhigh"
+    overrides:
+      extraManagedRuleGroups:
+        - vendor: "AWS"
+          name: "AWSManagedRulesAnonymousIpList"
+        - vendor: "AWS"
+          name: "AWSManagedRulesSQLiRuleSet"

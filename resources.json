@@ -1,0 +1,12 @@
+[
+  {
+    "id": "demo-alb/abcd1234",
+    "arn": "arn:aws:elasticloadbalancing:us-west-2:111122223333:loadbalancer/app/demo-alb/abcd1234",
+    "type": "alb",
+    "tags": {
+      "env": "prod",
+      "visibility": "public",
+      "sensitivity": "Dhigh"
+    }
+  }
+]

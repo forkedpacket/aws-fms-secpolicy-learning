@@ -1,0 +1,17 @@
+# Build/test artifacts
+generated/
+.gocache/
+.gomodcache/
+.gopath/
+.tools/
+
+# Terraform state (safe default)
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform/generated_policies.auto.tfvars.json
+
+# Editor cruft
+.DS_Store
+*.swp

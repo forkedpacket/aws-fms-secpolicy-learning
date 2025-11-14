@@ -1,0 +1,24 @@
+{
+  "type": "WAFV2",
+  "defaultAction": {
+    "type": "{{ .DefaultAction }}"
+  },
+  "overrideCustomerWebACLAssociation": false,
+  "postProcessRuleGroups": [],
+  "preProcessRuleGroups": [
+    {{- range $index, $rg := .RuleGroups -}}
+    {{- if gt $index 0 }},{{ end }}
+    {
+      "ruleGroupType": "ManagedRuleGroup",
+      "managedRuleGroupIdentifier": {
+        "vendorName": "{{ $rg.Vendor }}",
+        "managedRuleGroupName": "{{ $rg.Name }}"
+      },
+      "overrideAction": {
+        "type": "NONE"
+      },
+      "excludeRules": []
+    }
+    {{- end }}
+  ]
+}
