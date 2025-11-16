@@ -2,38 +2,19 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GEN_DIR="${ROOT_DIR}/generated"
-POLICIES_JSON="${GEN_DIR}/policies.json"
+DIST_DIR="${ROOT_DIR}/dist"
+LAMBDA_BUILD_DIR="${DIST_DIR}/lambda"
+LAMBDA_ZIP="${DIST_DIR}/lambda.zip"
 TF_DIR="${ROOT_DIR}/terraform"
-TF_VARS_JSON="${TF_DIR}/generated_policies.auto.tfvars.json"
 
-echo "[demo] ensuring generated directory exists"
-mkdir -p "${GEN_DIR}"
+echo "[demo] building Lambda (linux/amd64) into ${LAMBDA_ZIP}"
+mkdir -p "${LAMBDA_BUILD_DIR}"
+GOOS=linux GOARCH=amd64 go build -o "${LAMBDA_BUILD_DIR}/main" "${ROOT_DIR}/cmd/lambda"
+(cd "${LAMBDA_BUILD_DIR}" && zip -q ../lambda.zip main)
 
-if [ ! -f "${POLICIES_JSON}" ]; then
-  echo "[demo] policies.json not found; running Go renderer with discovery"
-
-  go run "${ROOT_DIR}/cmd/renderer" \
-    -discover \
-    -region "us-west-2" \
-    -config "${ROOT_DIR}/configs/policy-variants.yaml" \
-    -output "${POLICIES_JSON}"
-else
-  echo "[demo] found existing ${POLICIES_JSON}; skipping discovery/render"
-fi
-
-echo "[demo] wrapping policies.json into Terraform tfvars"
-
-cat > "${TF_VARS_JSON}" <<EOF
-{
-  "fms_policies_json": $(cat "${POLICIES_JSON}")
-}
-EOF
-
-echo "[demo] applying Terraform configuration with rendered FMS policies"
-
+echo "[demo] applying Terraform (ALB without WAF + IAM + Lambda)"
 cd "${TF_DIR}"
 terraform init -input=false
-terraform apply -auto-approve
+terraform apply -auto-approve -var "lambda_package=${LAMBDA_ZIP}"
 
-echo "[demo] done. Check the outputs above and the AWS Console (Firewall Manager + ALB)."
+echo "[demo] done. Invoke the Lambda with {\"dryRun\":true} to see intended policy changes."

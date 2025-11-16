@@ -103,9 +103,8 @@ resource "aws_lb" "demo" {
 
   tags = {
     Name        = "${local.project_name}-alb"
-    env         = "prod"
-    visibility  = "public"
-    sensitivity = "Dhigh"
+    WafRulesetPrimary   = "ou-shared-edge"
+    WafRulesetSecondary = "ou-shared-bot"
   }
 }
 
@@ -141,50 +140,201 @@ resource "aws_lb_listener" "demo_http" {
 }
 
 # -----------------------------------------------------------------------------
-# FMS / WAFv2 policy application
+# Local rule groups to mimic OU-managed sets
 # -----------------------------------------------------------------------------
 
-# Expect fms_policies_json to look like:
-# {
-#   "auto-alb-...": {
-#     "name": "auto-alb-...",
-#     "description": "...",
-#     "resource_type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
-#     "scope": "REGIONAL",
-#     "managed_service_data": "{... JSON ...}"
-#   }
-# }
+resource "aws_wafv2_rule_group" "primary_ou_shared_edge" {
+  name     = "${local.project_name}-primary-edge"
+  scope    = "REGIONAL"
+  capacity = 50
 
-locals {
-  fms_policies = var.fms_policies_json
-}
-
-# Optional module stub: FMS admin setup (placeholder for real org-level setup).
-module "fms_setup" {
-  source = "./modules/fms-setup"
-
-  # In a real-world scenario, you would pass org/OU/account info here.
-  create_placeholder = true
-}
-
-resource "aws_fms_policy" "waf_v2" {
-  for_each = local.fms_policies
-
-  name                  = each.value.name
-  delete_all_policy_resources = false
-  exclude_resource_tags       = false
-  remediation_enabled         = true
-
-  # Using resource_type_list for ALBs.
-  resource_type_list = [each.value.resource_type]
-
-  # Include all accounts in the org. For a PoC, we omit include_map/exclude_map
-  # and rely on tagging / resource types to scope application.
-
-  security_service_policy_data {
-    type                 = "WAFV2"
-    managed_service_data = each.value.managed_service_data
+  rule {
+    name     = "BlockAdminPaths"
+    priority = 1
+    action {
+      block {}
+    }
+    statement {
+      byte_match_statement {
+        positional_constraint = "CONTAINS"
+        search_string         = "/admin"
+        field_to_match {
+          uri_path {}
+        }
+        text_transformation {
+          priority = 0
+          type     = "NONE"
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.project_name}-primary-admin-paths"
+      sampled_requests_enabled   = true
+    }
   }
 
-  depends_on = [module.fms_setup]
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${local.project_name}-primary"
+    sampled_requests_enabled   = true
+  }
+}
+
+resource "aws_wafv2_rule_group" "secondary_ou_shared_bot" {
+  name     = "${local.project_name}-secondary-bot"
+  scope    = "REGIONAL"
+  capacity = 50
+
+  rule {
+    name     = "ChallengeUnknownAgents"
+    priority = 1
+    action {
+      challenge {}
+    }
+    statement {
+      byte_match_statement {
+        positional_constraint = "CONTAINS"
+        search_string         = "curl"
+        field_to_match {
+          single_header {
+            name = "user-agent"
+          }
+        }
+        text_transformation {
+          priority = 0
+          type     = "LOWERCASE"
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.project_name}-secondary-bots"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${local.project_name}-secondary"
+    sampled_requests_enabled   = true
+  }
+}
+
+locals {
+  policy_variants_yaml = templatefile("${path.module}/policy-variants.tpl.yaml", {
+    primary_tag_key   = var.primary_tag_key
+    secondary_tag_key = var.secondary_tag_key
+    primary_arn       = aws_wafv2_rule_group.primary_ou_shared_edge.arn
+    secondary_arn     = aws_wafv2_rule_group.secondary_ou_shared_bot.arn
+  })
+}
+
+resource "aws_ssm_parameter" "policy_variants" {
+  name        = var.config_ssm_param
+  description = "FMS/WAF policy variants for Lambda renderer"
+  type        = "String"
+  value       = local.policy_variants_yaml
+}
+
+# -----------------------------------------------------------------------------
+# Lambda: tag-driven WAF policy renderer (runs inside FMS admin account)
+# -----------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "lambda_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "lambda" {
+  name               = "${local.project_name}-lambda-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+data "aws_iam_policy_document" "lambda_inline" {
+  statement {
+    sid    = "FMSPolicyUpdates"
+    effect = "Allow"
+    actions = [
+      "fms:ListPolicies",
+      "fms:GetPolicy",
+      "fms:PutPolicy"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "Discovery"
+    effect = "Allow"
+    actions = [
+      "elasticloadbalancing:DescribeLoadBalancers",
+      "elasticloadbalancing:DescribeTags",
+      "organizations:ListAccountsForParent",
+      "sts:GetCallerIdentity"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "Logging"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ConfigFromSSM"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter"
+    ]
+    resources = [aws_ssm_parameter.policy_variants.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda" {
+  name   = "${local.project_name}-lambda-inline"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.lambda_inline.json
+}
+
+resource "aws_cloudwatch_log_group" "lambda" {
+  name              = "/aws/lambda/${local.project_name}-renderer"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "renderer" {
+  function_name = "${local.project_name}-renderer"
+  description   = "OU-scoped tag-driven WAF policy renderer"
+  role          = aws_iam_role.lambda.arn
+  handler       = "main"
+  runtime       = "provided.al2"
+
+  filename         = var.lambda_package
+  source_code_hash = filebase64sha256(var.lambda_package)
+
+  timeout = var.lambda_timeout
+  memory_size = var.lambda_memory
+
+  environment {
+    variables = {
+      OU_ID                  = var.ou_id
+      PRIMARY_TAG_KEY        = var.primary_tag_key
+      SECONDARY_TAG_KEY      = var.secondary_tag_key
+      DEFAULT_PRIMARY_RULES  = var.default_primary_rules
+      DEFAULT_SECONDARY_RULES= var.default_secondary_rules
+      CONFIG_SSM_PARAM       = var.config_ssm_param
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda]
 }

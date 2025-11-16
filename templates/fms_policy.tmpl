@@ -9,11 +9,15 @@
     {{- range $index, $rg := .RuleGroups -}}
     {{- if gt $index 0 }},{{ end }}
     {
-      "ruleGroupType": "ManagedRuleGroup",
+      "ruleGroupType": "{{ $rg.Type }}",
+      {{- if eq $rg.Type "ManagedRuleGroup" }}
       "managedRuleGroupIdentifier": {
         "vendorName": "{{ $rg.Vendor }}",
         "managedRuleGroupName": "{{ $rg.Name }}"
       },
+      {{- else }}
+      "ruleGroupArn": "{{ $rg.ARN }}",
+      {{- end }}
       "overrideAction": {
         "type": "NONE"
       },

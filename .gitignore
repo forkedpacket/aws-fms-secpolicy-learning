@@ -4,6 +4,8 @@ generated/
 .gomodcache/
 .gopath/
 .tools/
+.tooling/
+dist/
 
 # Terraform state (safe default)
 terraform/.terraform/

@@ -44,6 +44,10 @@ func BuildPolicies(resources []discovery.Resource, cfg *config.PolicyConfig, log
 	if err != nil {
 		return nil, fmt.Errorf("parse template: %w", err)
 	}
+	tmpl = tmpl.Lookup("fms_policy.tmpl")
+	if tmpl == nil {
+		return nil, fmt.Errorf("template fms_policy.tmpl not found after parsing")
+	}
 
 	result := make(map[string]RenderedPolicy)
 
@@ -74,27 +78,10 @@ func buildForALB(
 		return nil
 	}
 
-	// Match resources against the configured variants so that tagged assets
-	// can receive tailored rule groups or default actions.
-	var matchedVariants []config.Variant
-	for _, v := range cfg.Variants {
-		if matchesTags(res.Tags, v.Match) {
-			matchedVariants = append(matchedVariants, v)
-		}
-	}
+	primaryValue := selectRuleSetValue(res.Tags, cfg.TagKeys.Primary, cfg.Defaults.Primary, cfg.RuleSets.Primary, logger, res.ARN)
+	secondaryValue := selectRuleSetValue(res.Tags, cfg.TagKeys.Secondary, cfg.Defaults.Secondary, cfg.RuleSets.Secondary, logger, res.ARN)
 
-	if len(matchedVariants) == 0 {
-		logger.Infof("resource %s has no matching variants; using defaults only", res.ARN)
-	}
-
-	// AI EXTENSION: Allow multiple variants to merge; for now we only use the first.
-	var chosenVariant *config.Variant
-	if len(matchedVariants) > 0 {
-		chosenVariant = &matchedVariants[0]
-		logger.Infof("resource %s matched variant %s", res.ARN, chosenVariant.Name)
-	}
-
-	model := buildTemplateModel(defaults, chosenVariant)
+	model := buildTemplateModel(defaults, cfg.RuleSets.Primary[primaryValue], cfg.RuleSets.Secondary[secondaryValue])
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, model); err != nil {
@@ -107,7 +94,7 @@ func buildForALB(
 	}
 
 	policyName := fmt.Sprintf("auto-alb-%s", sanitizeName(res.ID))
-	desc := "Auto-generated WAFv2 policy for ALBs"
+	desc := fmt.Sprintf("Auto-generated WAFv2 policy (primary=%s, secondary=%s)", primaryValue, secondaryValue)
 
 	p := RenderedPolicy{
 		Name:               policyName,
@@ -120,16 +107,23 @@ func buildForALB(
 	return nil
 }
 
-func matchesTags(resourceTags map[string]string, match map[string]string) bool {
-	if len(match) == 0 {
-		return false
+func selectRuleSetValue(
+	tags map[string]string,
+	tagKey string,
+	defaultValue string,
+	available map[string]config.RuleSet,
+	logger *util.Logger,
+	resourceARN string,
+) string {
+	value := tags[tagKey]
+	if value == "" {
+		return defaultValue
 	}
-	for k, v := range match {
-		if resourceTags[k] != v {
-			return false
-		}
+	if _, ok := available[value]; ok {
+		return value
 	}
-	return true
+	logger.Warnf("resource %s has tag %s=%s which is not configured; using default %s", resourceARN, tagKey, value, defaultValue)
+	return defaultValue
 }
 
 func sanitizeName(s string) string {
@@ -159,42 +153,63 @@ type TemplateModel struct {
 }
 
 type TemplateRuleGroup struct {
-	Vendor string `json:"vendor"`
-	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Vendor string `json:"vendor,omitempty"`
+	Name   string `json:"name,omitempty"`
+	ARN    string `json:"arn,omitempty"`
 }
 
 func buildTemplateModel(
 	defaults config.ResourceDefaults,
-	variant *config.Variant,
+	primary config.RuleSet,
+	secondary config.RuleSet,
 ) TemplateModel {
 	// Begin with the base rule groups applied to every resource of this type.
-	ruleGroups := make([]TemplateRuleGroup, 0, len(defaults.ManagedRuleGroups))
-	for _, rg := range defaults.ManagedRuleGroups {
-		ruleGroups = append(ruleGroups, TemplateRuleGroup{
-			Vendor: rg.Vendor,
-			Name:   rg.Name,
-		})
-	}
+	merged := mergeRuleGroups(
+		defaults.ManagedRuleGroups,
+		primary.RuleGroups,
+		secondary.RuleGroups,
+	)
 
-	defaultAction := defaults.DefaultAction
-	if variant != nil && variant.Overrides.OverrideDefaultAction != "" {
-		defaultAction = variant.Overrides.OverrideDefaultAction
-	}
-
-	if variant != nil {
-		// Layer on variant extras after defaults so the rendered order mirrors the config.
-		for _, rg := range variant.Overrides.ExtraManagedRuleGroups {
-			ruleGroups = append(ruleGroups, TemplateRuleGroup{
-				Vendor: rg.Vendor,
-				Name:   rg.Name,
-			})
+	ruleGroups := make([]TemplateRuleGroup, 0, len(merged))
+	for _, rg := range merged {
+		t := TemplateRuleGroup{}
+		if rg.ARN != "" {
+			t.Type = "RuleGroup"
+			t.ARN = rg.ARN
+		} else {
+			t.Type = "ManagedRuleGroup"
+			t.Vendor = rg.Vendor
+			t.Name = rg.Name
 		}
+		ruleGroups = append(ruleGroups, t)
 	}
 
 	return TemplateModel{
 		Type:          "WAFV2",
-		DefaultAction: defaultAction,
+		DefaultAction: defaults.DefaultAction,
 		Scope:         defaults.Scope,
 		RuleGroups:    ruleGroups,
 	}
+}
+
+func mergeRuleGroups(groups ...[]config.RuleGroupConfig) []config.RuleGroupConfig {
+	seen := make(map[string]bool)
+	out := make([]config.RuleGroupConfig, 0)
+
+	for _, list := range groups {
+		for _, rg := range list {
+			key := rg.ARN
+			if key == "" {
+				key = rg.Vendor + "/" + rg.Name
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, rg)
+		}
+	}
+
+	return out
 }

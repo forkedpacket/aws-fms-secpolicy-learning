@@ -1,0 +1,29 @@
+# Tag-driven mapping for primary/secondary rule sets.
+
+resourceDefaults:
+  alb:
+    resourceType: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    scope: "REGIONAL"
+    defaultAction: "ALLOW"
+    managedRuleGroups:
+      # Baseline AWS-managed rule group applied to every ALB.
+      - vendor: "AWS"
+        name: "AWSManagedRulesCommonRuleSet"
+
+tagKeys:
+  primary: "${primary_tag_key}"
+  secondary: "${secondary_tag_key}"
+
+ruleSets:
+  primary:
+    ou-shared-edge:
+      ruleGroups:
+        - arn: "${primary_arn}"
+  secondary:
+    ou-shared-bot:
+      ruleGroups:
+        - arn: "${secondary_arn}"
+
+defaults:
+  primary: "ou-shared-edge"
+  secondary: "ou-shared-bot"
