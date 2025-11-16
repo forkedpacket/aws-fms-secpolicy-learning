@@ -56,8 +56,8 @@ Supporting docs: `AGENTS.md`, `BOTREADME.md`, `SCAFFOLD.md`.
 ## Prereqs
 
 - AWS Organization with a delegated **FMS admin account**.
-- Permissions for Lambda role: `fms:ListPolicies/GetPolicy/PutPolicy`, `elasticloadbalancing:Describe*`, `organizations:ListAccountsForParent`, `sts:GetCallerIdentity`, CloudWatch Logs.
-- Local tools: Go 1.22+, Terraform 1.5+, AWS CLI v2.
+- Permissions for Lambda role: `fms:ListPolicies/GetPolicy/PutPolicy`, `elasticloadbalancing:Describe*`, `organizations:ListAccountsForParent`, `sts:GetCallerIdentity`, CloudWatch Logs, and `ssm:GetParameter` for the config parameter.
+- Local tools: Go 1.23+, Terraform 1.5+, AWS CLI v2.
 
 Quick checks:
 
@@ -79,7 +79,7 @@ GOOS=linux GOARCH=amd64 go build -o dist/lambda/main ./cmd/lambda
 cd dist/lambda && zip ../lambda.zip main && cd ../..
 ```
 
-2) **Terraform apply (creates VPC + ALB w/o WAF + IAM + Lambda + WAF rule groups)**
+2) **Terraform apply (creates VPC + ALB w/o WAF + IAM + Lambda + WAF rule groups + SSM config)**
 
 ```bash
 cd terraform
