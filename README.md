@@ -19,13 +19,13 @@ Lambda-driven, tag-based AWS Firewall Manager (FMS) + WAFv2 lab. Terraform creat
 
 ```mermaid
 flowchart LR
-    A[AWS Org] -->|target OU| B[FMS Admin Account]
-    B -->|terraform| C[ALB (no WAF) + IAM + Lambda]
-    D[Lambda Event] --> C
-    C -->|discover ALBs| E[Resource Inventory]
-    E -->|tags primary/secondary| F[Rule Set Selection]
-    F -->|render template| G[managed_service_data JSON]
-    G -->|fms:PutPolicy| H[FMS Policies]
+    A["AWS Org"] -->|target OU| B["FMS Admin Account"]
+    B -->|terraform| C["ALB w/o WAF + IAM + Lambda"]
+    D["Lambda Event"] --> C
+    C -->|discover ALBs| E["Resource Inventory"]
+    E -->|tags primary/secondary| F["Rule Set Selection"]
+    F -->|render template| G["managed_service_data JSON"]
+    G -->|fms:PutPolicy| H["FMS Policies"]
     H -->|enforce WAFv2| C
 ```
 
